@@ -1,114 +1,114 @@
 //+------------------------------------------------------------------+
-//|                                          CleanSpike3Levels.mq5    |
-//|                        Three-Level Clean Spike Indicator for MT5  |
+//|                                          CleanSpike_3Levels.mq5   |
 //+------------------------------------------------------------------+
 #property copyright "Clean Spike Framework"
-#property version   "1.00"
-#property description "Identifies Level 1 (basic spike), Level 2 (clean body/shadow spike),"
-#property description "and Level 3 (timeframe-confluent spike)."
+#property version   "1.10"
+#property description "Level 1: sustained run of same-direction candles."
+#property description "Level 2: that run is structurally clean (large bodies, small opposing wicks)."
+#property description "Level 3: that clean run aligns with a strong HTF candle."
 
-//--- Plot definitions
 #property indicator_chart_window
 #property indicator_buffers 3
 #property indicator_plots   3
 
-//--- Level 1: Basic spike (small dot)
 #property indicator_type1   DRAW_ARROW
 #property indicator_color1  clrGray
 #property indicator_width1  1
-#property indicator_label1  "Level 1 Spike"
+#property indicator_label1  "Level 1 Run Spike"
 
-//--- Level 2: Clean structural spike (diamond)
 #property indicator_type2   DRAW_ARROW
 #property indicator_color2  clrDodgerBlue
 #property indicator_width2  2
-#property indicator_label2  "Level 2 Clean Spike"
+#property indicator_label2  "Level 2 Clean Run"
 
-//--- Level 3: Timeframe-confluent spike (large arrow)
 #property indicator_type3   DRAW_ARROW
 #property indicator_color3  clrGold
 #property indicator_width3  3
-#property indicator_label3  "Level 3 A+ Spike"
+#property indicator_label3  "Level 3 A+ Run"
 
-//+------------------------------------------------------------------+
-//| Input parameters                                                  |
-//+------------------------------------------------------------------+
-input group "--- Level 1: Basic Spike ---"
-input int    InpLookback          = 20;      // Lookback bars for average range
-input double InpSpikeMultiplier   = 1.8;     // Range must be >= this × average range
+//--- Inputs
+input group "--- Level 1: Sustained Run Spike ---"
+input int    InpMinRunLength       = 4;      // Minimum consecutive same-direction candles
+input int    InpLookback           = 20;     // Bars used to compute average candle range
+input double InpSpikeMultiplier    = 0.80;   // Net move must be >= this × (RunLength × avgRange)
+input double InpMinCandleBodyRatio = 0.25;   // Each candle body must be >= this × avgRange
 
 input group "--- Level 2: Clean Structure ---"
-input double InpMinBodyRatio      = 0.60;    // Body must be >= this fraction of total range
-input double InpMaxWickRatio      = 0.25;    // Each wick must be <= this fraction of total range
+input double InpMinBodyRatio       = 0.60;   // Sum(bodies) / Sum(ranges) across the run
+input double InpMaxWickRatio       = 0.25;   // Sum(opposing wicks) / Sum(ranges) across the run
 
 input group "--- Level 3: Timeframe Confluence ---"
-input ENUM_TIMEFRAMES InpHTF      = PERIOD_H1;  // Higher timeframe to check
-input double InpHTFMinBodyRatio   = 0.50;    // HTF candle body must be >= this fraction of its range
+input ENUM_TIMEFRAMES InpHTF       = PERIOD_H1;  // Higher timeframe to align with
+input double InpHTFMinBodyRatio    = 0.50;       // HTF body / HTF range
 
-//+------------------------------------------------------------------+
-//| Indicator buffers                                                 |
-//+------------------------------------------------------------------+
+input group "--- Behaviour ---"
+input bool   InpSkipFormingBar     = true;   // Do not plot on the current forming bar (non-repainting)
+
+//--- Buffers
 double BufferLevel1[];
 double BufferLevel2[];
 double BufferLevel3[];
 
-//--- Arrow codes (Wingdings characters)
 #define ARROW_LEVEL1  159   // small dot
 #define ARROW_LEVEL2  116   // diamond
-#define ARROW_LEVEL3  233   // large up arrow
+#define ARROW_LEVEL3  233   // large arrow
 
-//+------------------------------------------------------------------+
-//| Custom indicator initialization function                          |
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   //--- Map buffers
    SetIndexBuffer(0, BufferLevel1, INDICATOR_DATA);
    SetIndexBuffer(1, BufferLevel2, INDICATOR_DATA);
    SetIndexBuffer(2, BufferLevel3, INDICATOR_DATA);
 
-   //--- Set arrow codes
    PlotIndexSetInteger(0, PLOT_ARROW, ARROW_LEVEL1);
    PlotIndexSetInteger(1, PLOT_ARROW, ARROW_LEVEL2);
    PlotIndexSetInteger(2, PLOT_ARROW, ARROW_LEVEL3);
 
-   //--- Set empty values so bars without signals are not drawn
    PlotIndexSetDouble(0, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(1, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   //--- Optional: arrow vertical shift in pixels
    PlotIndexSetInteger(0, PLOT_ARROW_SHIFT, 10);
    PlotIndexSetInteger(1, PLOT_ARROW_SHIFT, 15);
    PlotIndexSetInteger(2, PLOT_ARROW_SHIFT, 20);
 
-   //--- Validate inputs
-   if(InpLookback < 2)
-   {
-      Print("InpLookback must be at least 2.");
-      return INIT_PARAMETERS_INCORRECT;
-   }
-   if(InpSpikeMultiplier <= 0.0)
-   {
-      Print("InpSpikeMultiplier must be greater than 0.");
-      return INIT_PARAMETERS_INCORRECT;
-   }
-   if(InpMinBodyRatio < 0.0 || InpMinBodyRatio > 1.0)
-   {
-      Print("InpMinBodyRatio must be between 0 and 1.");
-      return INIT_PARAMETERS_INCORRECT;
-   }
-   if(InpMaxWickRatio < 0.0 || InpMaxWickRatio > 1.0)
-   {
-      Print("InpMaxWickRatio must be between 0 and 1.");
-      return INIT_PARAMETERS_INCORRECT;
-   }
+   if(InpMinRunLength < 2)                     { Print("InpMinRunLength must be >= 2."); return INIT_PARAMETERS_INCORRECT; }
+   if(InpLookback < 2)                         { Print("InpLookback must be >= 2.");     return INIT_PARAMETERS_INCORRECT; }
+   if(InpSpikeMultiplier <= 0.0)               { Print("InpSpikeMultiplier must be > 0."); return INIT_PARAMETERS_INCORRECT; }
+   if(InpMinBodyRatio < 0.0 || InpMinBodyRatio > 1.0)     { Print("InpMinBodyRatio must be 0..1."); return INIT_PARAMETERS_INCORRECT; }
+   if(InpMaxWickRatio < 0.0 || InpMaxWickRatio > 1.0)     { Print("InpMaxWickRatio must be 0..1."); return INIT_PARAMETERS_INCORRECT; }
 
    return INIT_SUCCEEDED;
 }
 
 //+------------------------------------------------------------------+
-//| Custom indicator iteration function                               |
+//| Direction of a single candle: 1 bull, -1 bear, 0 doji             |
+//+------------------------------------------------------------------+
+int CandleDir(const double &open[], const double &close[], int bar)
+{
+   if(close[bar] > open[bar]) return 1;
+   if(close[bar] < open[bar]) return -1;
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Length of the same-direction run ending at 'bar', capped at 'cap'|
+//+------------------------------------------------------------------+
+int RunLengthCapped(const double &open[], const double &close[], int bar, int cap)
+{
+   if(bar < 0) return 0;
+   int dir = CandleDir(open, close, bar);
+   if(dir == 0) return 0;
+   int len = 1;
+   for(int k = bar - 1; k >= 0 && len < cap; k--)
+   {
+      int dk = CandleDir(open, close, k);
+      if(dk != dir) break;
+      len++;
+   }
+   return len;
+}
+
 //+------------------------------------------------------------------+
 int OnCalculate(const int rates_total,
                 const int prev_calculated,
@@ -121,117 +121,133 @@ int OnCalculate(const int rates_total,
                 const long &volume[],
                 const int &spread[])
 {
-   //--- Need enough bars for the lookback average
-   if(rates_total < InpLookback + 2)
+   const int warmup = InpLookback + InpMinRunLength + 2;
+   if(rates_total < warmup)
       return 0;
 
-   //--- Determine calculation start
    int start;
    if(prev_calculated == 0)
    {
-      start = InpLookback;   // skip the warm-up period
-      //--- Initialize all buffers to EMPTY_VALUE
+      start = warmup;
       ArrayInitialize(BufferLevel1, EMPTY_VALUE);
       ArrayInitialize(BufferLevel2, EMPTY_VALUE);
       ArrayInitialize(BufferLevel3, EMPTY_VALUE);
    }
    else
    {
-      start = prev_calculated - 1;   // recalculate the last bar for updates
-      if(start < InpLookback)
-         start = InpLookback;
+      start = prev_calculated - 1;
+      if(start < warmup) start = warmup;
    }
 
-   //--- Main loop
    for(int i = start; i < rates_total; i++)
    {
-      //--- Reset buffer values for this bar
       BufferLevel1[i] = EMPTY_VALUE;
       BufferLevel2[i] = EMPTY_VALUE;
       BufferLevel3[i] = EMPTY_VALUE;
 
-      //--- Candle geometry
-      double range = high[i] - low[i];
-      if(range <= 0.0)
-         continue;   // skip flat bars
+      if(InpSkipFormingBar && i == rates_total - 1)
+         continue;
 
-      double bodyHigh = MathMax(open[i], close[i]);
-      double bodyLow  = MathMin(open[i], close[i]);
-      double bodySize = bodyHigh - bodyLow;
-      double upperWick = high[i] - bodyHigh;
-      double lowerWick = bodyLow - low[i];
+      const int N = InpMinRunLength;
 
-      //--- Determine candle direction
-      bool isBullish = (close[i] > open[i]);
-      bool isBearish = (close[i] < open[i]);
-      if(!isBullish && !isBearish)
-         continue;   // skip doji-like bars with zero body
+      //--- Confirmation: run ending at i has length exactly N
+      int rl_i = RunLengthCapped(open, close, i, N);
+      if(rl_i != N) continue;
 
-      //--- Calculate average range over the lookback period
+      int rl_prev = (i > 0) ? RunLengthCapped(open, close, i - 1, N) : 0;
+      if(rl_prev != N - 1) continue;      // already signalled earlier in a longer run
+
+      const int runStart = i - N + 1;
+      if(runStart - InpLookback < 0) continue;
+
+      const bool isBullish = (CandleDir(open, close, i) == 1);
+
+      //--- Verify every candle in the run is same-direction
+      bool uniform = true;
+      for(int k = runStart; k <= i; k++)
+      {
+         int dk = CandleDir(open, close, k);
+         if((isBullish && dk != 1) || (!isBullish && dk != -1)) { uniform = false; break; }
+      }
+      if(!uniform) continue;
+
+      //--- Average candle range over the lookback immediately before the run
       double avgRange = 0.0;
-      for(int j = i - InpLookback; j < i; j++)
-         avgRange += (high[j] - low[j]);
+      for(int k = runStart - InpLookback; k < runStart; k++)
+         avgRange += (high[k] - low[k]);
       avgRange /= InpLookback;
-      if(avgRange <= 0.0)
-         continue;
+      if(avgRange <= 0.0) continue;
 
-      //--- LEVEL 1 CHECK: Is this a spike?
-      bool isSpike = (range >= InpSpikeMultiplier * avgRange);
-      if(!isSpike)
-         continue;
+      //--- Aggregate statistics of the run
+      double sumRanges = 0.0, sumBodies = 0.0, sumOpposingWicks = 0.0;
+      double runLowestLow = low[runStart];
+      double runHighestHigh = high[runStart];
+      bool allCandlesLargeEnough = true;
 
-      //--- Level 1 signal
-      BufferLevel1[i] = (isBullish) ? low[i] : high[i];
+      for(int k = runStart; k <= i; k++)
+      {
+         const double r           = high[k] - low[k];
+         const double body        = MathAbs(close[k] - open[k]);
+         const double lowerWick   = MathMin(open[k], close[k]) - low[k];
+         const double upperWick   = high[k] - MathMax(open[k], close[k]);
 
-      //--- LEVEL 2 CHECK: Is the spike clean?
-      double bodyRatio = bodySize / range;
-      double upperWickRatio = upperWick / range;
-      double lowerWickRatio = lowerWick / range;
+         sumRanges        += r;
+         sumBodies        += body;
+         sumOpposingWicks += (isBullish ? lowerWick : upperWick);
 
-      bool isCleanStructure = (bodyRatio >= InpMinBodyRatio) &&
-                              (upperWickRatio <= InpMaxWickRatio) &&
-                              (lowerWickRatio <= InpMaxWickRatio);
-      if(!isCleanStructure)
-         continue;
+         if(low[k]  < runLowestLow)   runLowestLow   = low[k];
+         if(high[k] > runHighestHigh) runHighestHigh = high[k];
 
-      //--- Level 2 signal
-      BufferLevel2[i] = (isBullish) ? low[i] : high[i];
+         if(InpMinCandleBodyRatio > 0.0 && body < InpMinCandleBodyRatio * avgRange)
+            allCandlesLargeEnough = false;
+      }
 
-      //--- LEVEL 3 CHECK: Timeframe confluence
+      if(!allCandlesLargeEnough) continue;
+
+      //--- Net directional move of the run
+      const double netMove = isBullish ? (close[i] - open[runStart])
+                                       : (open[runStart] - close[i]);
+      if(netMove <= 0.0) continue;
+
+      //--- LEVEL 1
+      const double requiredMove = InpSpikeMultiplier * (double)N * avgRange;
+      if(netMove < requiredMove) continue;
+
+      //--- LEVEL 2
+      const double bodyRatio         = (sumRanges > 0.0) ? (sumBodies / sumRanges) : 0.0;
+      const double opposingWickRatio = (sumRanges > 0.0) ? (sumOpposingWicks / sumRanges) : 1.0;
+      const bool isClean = (bodyRatio >= InpMinBodyRatio) && (opposingWickRatio <= InpMaxWickRatio);
+
+      //--- LEVEL 3 (last closed HTF bar must agree in direction and have a real body)
+      bool isHTFConfluent = false;
       MqlRates htfRates[];
-      int htfCopied = CopyRates(_Symbol, InpHTF, 0, 2, htfRates);
-      if(htfCopied < 2)
-         continue;   // HTF data not ready
+      ArraySetAsSeries(htfRates, true);
+      int htfCopied = CopyRates(_Symbol, InpHTF, 0, 3, htfRates);
+      if(htfCopied >= 3)
+      {
+         const double htfOpen  = htfRates[1].open;
+         const double htfClose = htfRates[1].close;
+         const double htfHigh  = htfRates[1].high;
+         const double htfLow   = htfRates[1].low;
+         const double htfRange = htfHigh - htfLow;
 
-      //--- Use the most recent completed HTF bar (index 1 in the returned array)
-      //--- CopyRates with start_pos=0, count=2 returns bars ordered oldest -> newest.
-      //--- Index 1 is the most recently completed bar on the HTF.
-      double htfOpen  = htfRates[1].open;
-      double htfClose = htfRates[1].close;
-      double htfHigh  = htfRates[1].high;
-      double htfLow   = htfRates[1].low;
-      double htfRange = htfHigh - htfLow;
+         if(htfRange > 0.0)
+         {
+            const double htfBodyRatio = MathAbs(htfClose - htfOpen) / htfRange;
+            const bool htfBull = (htfClose > htfOpen);
+            const bool htfBear = (htfClose < htfOpen);
 
-      if(htfRange <= 0.0)
-         continue;
+            if(isBullish && htfBull && htfBodyRatio >= InpHTFMinBodyRatio) isHTFConfluent = true;
+            if(!isBullish && htfBear && htfBodyRatio >= InpHTFMinBodyRatio) isHTFConfluent = true;
+         }
+      }
 
-      double htfBodySize = MathAbs(htfClose - htfOpen);
-      double htfBodyRatio = htfBodySize / htfRange;
-      bool htfIsBullish = (htfClose > htfOpen);
-      bool htfIsBearish = (htfClose < htfOpen);
+      //--- Plot only the highest achieved level
+      const double plotPrice = isBullish ? runLowestLow : runHighestHigh;
 
-      //--- HTF must be moving in the same direction and have a reasonably sized body
-      bool htfAligned = false;
-      if(isBullish && htfIsBullish && htfBodyRatio >= InpHTFMinBodyRatio)
-         htfAligned = true;
-      if(isBearish && htfIsBearish && htfBodyRatio >= InpHTFMinBodyRatio)
-         htfAligned = true;
-
-      if(!htfAligned)
-         continue;
-
-      //--- Level 3 signal (A+ setup)
-      BufferLevel3[i] = (isBullish) ? low[i] : high[i];
+      if(isClean && isHTFConfluent) BufferLevel3[i] = plotPrice;
+      else if(isClean)              BufferLevel2[i] = plotPrice;
+      else                          BufferLevel1[i] = plotPrice;
    }
 
    return(rates_total);
